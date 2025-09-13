@@ -1,0 +1,46 @@
+
+    {
+        "url": "",
+        "timeout_ms": 45000,
+        "selectors": [
+            { "name": "title",   "selector": "meta[property='og:title'][content]",  "output": { "type": "attr", "attr": "content" }, "first": true, "unique": true },
+            { "name": "title",   "selector": "meta[name='twitter:title'][content]", "output": { "type": "attr", "attr": "content" }, "first": true, "unique": true },
+            { "name": "title",   "selector": "h1",                                   "output": { "type": "text" }, "first": true, "unique": true },
+
+            { "name": "descriptions", "selector": "html", "output": { "type": "text" }, "unique": true },
+
+            { "name": "content_html", "selector": "article",                            "output": { "type": "html" }, "first": true },
+            { "name": "content_html", "selector": "main .content, .entry-content, .post-content, .article-body, .article__body", "output": { "type": "html" }, "first": true },
+
+            { "name": "headings", "selector": "h2", "output": { "type": "text" } },
+            { "name": "headings", "selector": "h3", "output": { "type": "text" } },
+
+            { "name": "author",    "selector": "meta[name='author'][content]", "output": { "type": "attr", "attr": "content" }, "first": true, "unique": true },
+            { "name": "author",    "selector": "a[rel='author'], .author, .byline", "output": { "type": "text" }, "first": true, "unique": true },
+
+            { "name": "published", "selector": "meta[property='article:published_time'][content]", "output": { "type": "attr", "attr": "content" }, "first": true },
+            { "name": "published", "selector": "time[datetime], time[pubdate]", "output": { "type": "attr", "attr": "datetime" }, "first": true },
+            { "name": "modified",  "selector": "meta[property='article:modified_time'][content]", "output": { "type": "attr", "attr": "content" }, "first": true },
+
+            { "name": "tags",      "selector": "meta[property='article:tag'][content]", "output": { "type": "attr", "attr": "content" }, "unique": true },
+            { "name": "tags",      "selector": "a[rel='tag'], .tag, .tags a",           "output": { "type": "text" }, "unique": true },
+
+            { "name": "links",   "selector": "a[href]:not([href^='#']):not([href^='javascript:'])", "output": { "type": "attr", "attr": "href", "absolute": true }, "unique": true },
+            { "name": "images",  "selector": "img[src]",                                  "output": { "type": "attr", "attr": "src",  "absolute": true }, "unique": true },
+            { "name": "images",  "selector": "meta[property='og:image'][content]",      "output": { "type": "attr", "attr": "content", "absolute": true }, "unique": true },
+
+            { "name": "canonical", "selector": "link[rel='canonical'][href]", "output": { "type": "attr", "attr": "href", "absolute": true }, "first": true },
+            { "name": "next",      "selector": "link[rel='next'][href]",      "output": { "type": "attr", "attr": "href", "absolute": true }, "first": true },
+            { "name": "prev",      "selector": "link[rel='prev'][href]",      "output": { "type": "attr", "attr": "href", "absolute": true }, "first": true },
+
+            { "name": "site_name", "selector": "meta[property='og:site_name'][content]", "output": { "type": "attr", "attr": "content" }, "first": true, "unique": true },
+            { "name": "favicon",   "selector": "link[rel~='icon'][href]",                 "output": { "type": "attr", "attr": "href", "absolute": true }, "first": true },
+            { "name": "rss",       "selector": "link[rel='alternate'][type*='rss' i][href]",  "output": { "type": "attr", "attr": "href", "absolute": true }, "unique": true },
+            { "name": "rss",       "selector": "link[rel='alternate'][type*='atom' i][href]", "output": { "type": "attr", "attr": "href", "absolute": true }, "unique": true },
+
+            { "name": "lang",      "selector": "html[lang]", "output": { "type": "attr", "attr": "lang" }, "first": true },
+            { "name": "base",      "selector": "base[href]", "output": { "type": "attr", "attr": "href", "absolute": true }, "first": true }
+        ],
+        "render": { "enabled": true, "timeout_ms": 20000, "wait_ms": 1000 },
+        "normalize": true
+    }
