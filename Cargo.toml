@@ -15,4 +15,4 @@ url = "2"
 headless_chrome = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
-kurosabi = "0.4.5"
+kurosabi = "0.4.7"

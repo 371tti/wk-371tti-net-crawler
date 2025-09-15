@@ -1,12 +1,3 @@
-/// 先頭に https:// がなければ付与
-fn add_https_if_missing(url: &str) -> String {
-    let u = url.trim();
-    if u.starts_with("http://") || u.starts_with("https://") {
-        u.to_string()
-    } else {
-        format!("https://{}", u)
-    }
-}
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -18,7 +9,6 @@ use serde_json::json;
 use url::Url;
 use headless_chrome::Browser;
 use clap::ValueEnum;
-use kurosabi::Kurosabi;
 use tracing::{info, warn, error};
 use tracing_subscriber::EnvFilter;
 
@@ -135,7 +125,7 @@ fn main() {
     // POST /api -> JSON spec そのまま受け取り実行
     app.post("/api", |mut c| async move {
         info!("POST /api received");
-        // 可能ならJSONとして直接パース、ダメならテキスト→JSON
+        // 可能ならJSONとして直接パース、ダメならテキスト->JSON
         let spec_res: Result<JsonSpec, _> = c.req.body_de_struct::<JsonSpec>().await;
         let reply = match spec_res {
             Ok(mut spec) => {
@@ -243,7 +233,12 @@ fn main() {
         c
     });
 
-    app.server().build().run();
+    app
+        .server()
+        .host([0,0,0,0])
+        .port(88)
+        .build()
+        .run();
 }
 
 fn has_class(el: &ElementRef, class: &str) -> bool {
@@ -361,7 +356,6 @@ async fn execute_spec(spec: JsonSpec) -> Result<serde_json::Value> {
     let mut results: BTreeMap<String, Vec<String>> = BTreeMap::new();
     info!(selectors = spec.selectors.len(), "start selecting");
     for spec_item in spec.selectors.iter() {
-        // ...従来通り...
         let selector = match Selector::parse(&spec_item.selector) {
             Ok(s) => s,
             Err(_e) => {
@@ -462,4 +456,14 @@ fn normalize_text(mut s: String) -> String {
 fn normalize_if(s: String, sel_norm: Option<bool>, out_norm: Option<bool>, global_norm: bool) -> String {
     let enabled = out_norm.or(sel_norm).unwrap_or(global_norm);
     if enabled { normalize_text(s) } else { s }
+}
+
+/// 先頭に https:// がなければ付与
+fn add_https_if_missing(url: &str) -> String {
+    let u = url.trim();
+    if u.starts_with("http://") || u.starts_with("https://") {
+        u.to_string()
+    } else {
+        format!("https://{}", u)
+    }
 }

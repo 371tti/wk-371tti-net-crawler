@@ -3,6 +3,7 @@
         "url": "",
         "timeout_ms": 45000,
         "selectors": [
+            { "name": "title",   "selector": "title",                                "output": { "type": "text" }, "first": true, "unique": true },
             { "name": "title",   "selector": "meta[property='og:title'][content]",  "output": { "type": "attr", "attr": "content" }, "first": true, "unique": true },
             { "name": "title",   "selector": "meta[name='twitter:title'][content]", "output": { "type": "attr", "attr": "content" }, "first": true, "unique": true },
             { "name": "title",   "selector": "h1",                                   "output": { "type": "text" }, "first": true, "unique": true },
@@ -26,9 +27,7 @@
             { "name": "tags",      "selector": "a[rel='tag'], .tag, .tags a",           "output": { "type": "text" }, "unique": true },
 
             { "name": "links",   "selector": "a[href]:not([href^='#']):not([href^='javascript:'])", "output": { "type": "attr", "attr": "href", "absolute": true }, "unique": true },
-            { "name": "images",  "selector": "img[src]",                                  "output": { "type": "attr", "attr": "src",  "absolute": true }, "unique": true },
-            { "name": "images",  "selector": "meta[property='og:image'][content]",      "output": { "type": "attr", "attr": "content", "absolute": true }, "unique": true },
-
+            
             { "name": "canonical", "selector": "link[rel='canonical'][href]", "output": { "type": "attr", "attr": "href", "absolute": true }, "first": true },
             { "name": "next",      "selector": "link[rel='next'][href]",      "output": { "type": "attr", "attr": "href", "absolute": true }, "first": true },
             { "name": "prev",      "selector": "link[rel='prev'][href]",      "output": { "type": "attr", "attr": "href", "absolute": true }, "first": true },
