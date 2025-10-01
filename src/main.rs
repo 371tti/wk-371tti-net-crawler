@@ -113,6 +113,8 @@ enum WaitKind { Load, Selector, Domcontentloaded, Domidle }
 #[serde(rename_all = "lowercase")]
 enum OutputKind { Text, Html, Attr }
 
+const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (+https://371tti.net)";
+
 fn main() {
     let mut app = kurosabi::Kurosabi::new();
     // ロガー初期化（RUST_LOG優先、なければinfo）
@@ -236,6 +238,7 @@ fn main() {
     app
         .server()
         .host([0,0,0,0])
+        .thread(32)
         .port(88)
         .build()
         .run();
@@ -256,6 +259,9 @@ async fn execute_spec(spec: JsonSpec) -> Result<serde_json::Value> {
     let quiet_ms = spec.quiet_ms.unwrap_or(0);
     let normalize_global = spec.normalize.unwrap_or(false);
     info!(url = %spec.url, quiet_ms, timeout_ms, normalize = %normalize_global, "execute_spec start");
+
+    // セキュリティ: ローカル/内部ネットワーク/禁止スキームを拒否
+    validate_target_url(&spec.url)?;
 
     // レンダリングが必要か分岐
     let render = spec.render.clone().unwrap_or_default();
@@ -313,7 +319,7 @@ async fn execute_spec(spec: JsonSpec) -> Result<serde_json::Value> {
 
             // ステータスは別途軽量に取得（必須でなければスキップ可）
             let client = reqwest::Client::builder()
-                .user_agent("wk-371tti-net-crawler/0.1 (+https://example.invalid)")
+                .user_agent(UA)
                 .redirect(reqwest::redirect::Policy::limited(10))
                 .timeout(Duration::from_millis(timeout_ms))
                 .brotli(true)
@@ -328,7 +334,7 @@ async fn execute_spec(spec: JsonSpec) -> Result<serde_json::Value> {
         } else {
             // 通常のHTTP取得
             let client = reqwest::Client::builder()
-                .user_agent("wk-371tti-net-crawler/0.1 (+https://example.invalid)")
+                .user_agent(UA)
                 .redirect(reqwest::redirect::Policy::limited(10))
                 .timeout(Duration::from_millis(timeout_ms))
                 .brotli(true)
@@ -465,5 +471,58 @@ fn add_https_if_missing(url: &str) -> String {
         u.to_string()
     } else {
         format!("https://{}", u)
+    }
+}
+
+/// 危険な(ローカル/内部/非 http(s)) URL を拒否
+fn validate_target_url(raw: &str) -> Result<()> {
+    let url = Url::parse(raw).context("invalid url")?;
+    let scheme = url.scheme().to_ascii_lowercase();
+    if scheme != "http" && scheme != "https" {
+        anyhow::bail!("disallowed scheme: {}", scheme);
+    }
+    if let Some(host) = url.host_str() {
+        let host_lc = host.to_ascii_lowercase();
+        // 典型的なローカルホスト名
+        if host_lc == "localhost" || host_lc == "ip6-localhost" { anyhow::bail!("disallowed host: {}", host); }
+        // 明示的 IPv4/IPv6 リテラル判定
+        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+            if is_private_ip(&ip) { anyhow::bail!("disallowed private address: {}", ip); }
+        } else {
+            // 簡易 FQDN ベース拒否（.local, .internal 等）
+            if host_lc.ends_with(".local") || host_lc.ends_with(".internal") || host_lc.ends_with(".localhost") {
+                anyhow::bail!("disallowed pseudo-local domain: {}", host);
+            }
+        }
+    } else {
+        anyhow::bail!("url has no host");
+    }
+    Ok(())
+}
+
+fn is_private_ip(ip: &std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let octets = v4.octets();
+            match octets {
+                [10, _, _, _] => true,                      // 10.0.0.0/8
+                [172, b, _, _] if (16..=31).contains(&b) => true, // 172.16.0.0/12
+                [192, 168, _, _] => true,                   // 192.168.0.0/16
+                [127, _, _, _] => true,                     // loopback
+                [169, 254, _, _] => true,                   // link-local
+                [0, 0, 0, 0] => true,                       // INADDR_ANY
+                _ => false,
+            }
+        }
+        std::net::IpAddr::V6(v6) => {
+            let segments = v6.segments();
+            // loopback ::1
+            if *v6 == std::net::Ipv6Addr::LOCALHOST { return true; }
+            // link-local fe80::/10 (fe80 - febf)
+            if (0xfe80..=0xfebf).contains(&(segments[0])) { return true; }
+            // unique local fc00::/7 (fc00 - fdff)
+            if (0xfc00..=0xfdff).contains(&(segments[0])) { return true; }
+            false
+        }
     }
 }
