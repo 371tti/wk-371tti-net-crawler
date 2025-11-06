@@ -3,7 +3,7 @@ use std::error::Error;
 use headless_chrome::{Browser, LaunchOptionsBuilder};
 use headless_chrome::protocol::cdp::Page;
 
-fn browse_wikipedia() -> Result<(), Box<dyn Error>> {
+fn browse() -> Result<(), Box<dyn Error>> {
     let browser = Browser::new(
         LaunchOptionsBuilder::default()
             .disable_default_args(true)
@@ -39,7 +39,7 @@ fn browse_wikipedia() -> Result<(), Box<dyn Error>> {
 
 
 fn main() {
-    if let Err(err) = browse_wikipedia() {
+    if let Err(err) = browse() {
         eprintln!("Error: {}", err);
         std::process::exit(1);
     }
