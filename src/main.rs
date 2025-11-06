@@ -23,10 +23,7 @@ fn browse_wikipedia() -> Result<(), Box<dyn Error>> {
     tab.wait_for_element("textarea")?.click()?;
 
     // Type in a query and press `Enter`
-    tab.type_str("WebKit")?.press_key("Enter")?;
-
-    // We should end up on the WebKit-page once navigated
-    let elem = tab.wait_for_element("#searchform")?;
+    tab.type_str("371tti")?.press_key("Enter")?;
 
     let jpeg_data = tab.capture_screenshot(
         Page::CaptureScreenshotFormatOption::Jpeg,
