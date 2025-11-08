@@ -1,24 +1,17 @@
+use std::collections::HashMap;
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScrapeResults {
-    pub author: Vec<String>,
-    pub base: Vec<String>,
-    pub canonical: Vec<String>,
-    pub content_html: Vec<String>,
-    pub descriptions: Vec<String>,
-    pub favicon: Vec<String>,
-    pub headings: Vec<String>,
-    pub lang: Vec<String>,
+    pub url: String,
+    pub title: Option<String>,
+    pub contents: HashMap<String, String>,
+    pub lang: Option<String>,
+    pub favicon: Option<String>,
     pub links: Vec<String>,
-    pub modified: Vec<String>,
-    pub next: Vec<String>,
-    pub prev: Vec<String>,
-    pub published: Vec<String>,
-    pub rss: Vec<String>,
-    pub site_name: Vec<String>,
-    pub tags: Vec<String>,
-    pub title: Vec<String>,
+    pub document: String,
+    pub text: String,
 }
 
 /// success が bool の API レスポンスに対応 (例: {"success":true, ...} / {"success":false, "error":...})

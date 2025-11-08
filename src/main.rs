@@ -3,35 +3,20 @@ use std::error::Error;
 pub mod browser;
 pub mod schema;
 
-use headless_chrome::{Browser, LaunchOptionsBuilder};
-use headless_chrome::protocol::cdp::Page;
-
 fn browse_wikipedia() -> Result<(), Box<dyn Error>> {
-    let browser = Browser::new(
-        LaunchOptionsBuilder::default()
-            .disable_default_args(true)
-            .headless(true)
-            .window_size(Some((2560, 1440)))
-            .sandbox(true)
-            .build()
-            .unwrap(),
-    )?;
-    println!("{:?}", browser.get_version()?);
+    let engine = browser::Engine::default();
 
-    let tab = browser.new_tab()?;
+    let res = engine.scraping("https://ja.wikipedia.org/wiki/%E6%B7%B1%E6%B5%B7", vec!["h2"], Some("#bodyContent:not(.vector-body-before-content):not(.hatnote)"), None)?;
 
-    // Navigate to wikipedia
-    let viewport = tab.navigate_to("https://wikipedia.org")?.wait_for_element("html")?.get_box_model()?.margin_viewport();
-
-    let jpeg_data = tab.capture_screenshot(
-        Page::CaptureScreenshotFormatOption::Png,
-        Some(100),
-        Some(viewport),
-        true)?;
-    // Save the screenshot to disc
-    std::fs::write("screenshot.png", jpeg_data)?;
-    println!("Screenshot saved to screenshot.png");
-
+    for content in res.contents {
+        println!("Content: {} / {}", content.0, content.1);
+    }
+    println!("URL: {}", res.url);
+    println!("Language: {:?}", res.lang);
+    println!("Favicon: {:?}", res.favicon);
+    println!("Title: {:?}", res.title);
+    println!("Links: {:?}", res.links);
+    println!("Text: {}", res.text);
 
     Ok(())
 }
