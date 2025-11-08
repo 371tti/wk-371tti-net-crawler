@@ -144,7 +144,7 @@ async fn main() {
     let server_handle = tokio::spawn(async move {
         kurosabi.server()
             .host([0,0,0,0])
-            .port(80)
+            .port(800)
             .build().run_async().await;
     });
 
