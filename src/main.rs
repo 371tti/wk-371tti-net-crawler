@@ -1,13 +1,18 @@
 use std::error::Error;
 
+pub mod browser;
+pub mod schema;
+
 use headless_chrome::{Browser, LaunchOptionsBuilder};
 use headless_chrome::protocol::cdp::Page;
 
-fn browse() -> Result<(), Box<dyn Error>> {
+fn browse_wikipedia() -> Result<(), Box<dyn Error>> {
     let browser = Browser::new(
         LaunchOptionsBuilder::default()
             .disable_default_args(true)
-            .headless(false)
+            .headless(true)
+            .window_size(Some((2560, 1440)))
+            .sandbox(true)
             .build()
             .unwrap(),
     )?;
@@ -16,30 +21,23 @@ fn browse() -> Result<(), Box<dyn Error>> {
     let tab = browser.new_tab()?;
 
     // Navigate to wikipedia
-    tab.navigate_to("https://www.google.com/")?;
-
-    // Wait for network/javascript/dom to make the search-box available
-    // and click it.
-    tab.wait_for_element("textarea")?.click()?;
-
-    // Type in a query and press `Enter`
-    tab.type_str("371tti")?.press_key("Enter")?;
+    let viewport = tab.navigate_to("https://wikipedia.org")?.wait_for_element("html")?.get_box_model()?.margin_viewport();
 
     let jpeg_data = tab.capture_screenshot(
-        Page::CaptureScreenshotFormatOption::Jpeg,
-        None,
-        None,
+        Page::CaptureScreenshotFormatOption::Png,
+        Some(100),
+        Some(viewport),
         true)?;
     // Save the screenshot to disc
-    std::fs::write("screenshot.jpeg", jpeg_data)?;
+    std::fs::write("screenshot.png", jpeg_data)?;
+    println!("Screenshot saved to screenshot.png");
 
 
     Ok(())
 }
 
-
 fn main() {
-    if let Err(err) = browse() {
+    if let Err(err) = browse_wikipedia() {
         eprintln!("Error: {}", err);
         std::process::exit(1);
     }
