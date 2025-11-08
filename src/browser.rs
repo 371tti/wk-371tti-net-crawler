@@ -1,11 +1,10 @@
-use std::{collections::{HashMap, HashSet}, error::Error};
+use std::{collections::HashMap, error::Error};
 use std::sync::Arc;
 
 use chromiumoxide::{Browser, BrowserConfig, Page, browser::HeadlessMode, cdp::browser_protocol::{emulation::{SetGeolocationOverrideParamsBuilder, SetTimezoneOverrideParamsBuilder}, page::{CaptureScreenshotFormat, ViewportBuilder}, target::CreateTargetParamsBuilder}, handler::viewport::Viewport, page::ScreenshotParamsBuilder};
 use tokio::sync::Mutex as AsyncMutex;
-use ego_tree::NodeRef;
 use futures::StreamExt;
-use scraper::{Html, Node, Selector};
+use scraper::{Html, Selector};
 
 use crate::schema::ScrapeResults;
 
