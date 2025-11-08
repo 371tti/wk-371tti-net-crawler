@@ -1,78 +1,160 @@
-use std::{collections::{HashMap, HashSet}, error::Error, sync::Arc};
+use std::{collections::{HashMap, HashSet}, error::Error};
+use std::sync::Arc;
 
+use chromiumoxide::{Browser, BrowserConfig, Page, browser::HeadlessMode, cdp::browser_protocol::{emulation::{SetGeolocationOverrideParamsBuilder, SetTimezoneOverrideParamsBuilder}, page::{CaptureScreenshotFormat, ViewportBuilder}, target::CreateTargetParamsBuilder}, handler::viewport::Viewport, page::ScreenshotParamsBuilder};
+use tokio::sync::Mutex as AsyncMutex;
 use ego_tree::NodeRef;
-use headless_chrome::{Browser, LaunchOptionsBuilder};
+use futures::StreamExt;
 use scraper::{Html, Node, Selector};
 
 use crate::schema::ScrapeResults;
 
 pub struct Engine {
-    pub browser: Arc<Browser>,
+    pub browser: Arc<AsyncMutex<Browser>>,
+    pub handle: tokio::task::JoinHandle<()>,
 }
 
 impl Engine {
+    pub async fn new() -> Result<Self, Box<dyn Error>> {
+        let (browser, mut handler) = Browser::launch(
+            BrowserConfig::builder()
+                .window_size(2560, 1440)
+                .viewport(
+                    Viewport {
+                        width: 2560,
+                        height: 1440,
+                        device_scale_factor: None,
+                        emulating_mobile: false,
+                        is_landscape: true,
+                        has_touch: false,
+                    }
+                )
+                .disable_cache()
+                .headless_mode(HeadlessMode::New)
+                .build()?,
+        ).await?;
+        let browser = Arc::new(AsyncMutex::new(browser));
+        let handle = tokio::task::spawn(async move {
+            while let Some(h) = handler.next().await {
+                if h.is_err() {
+                    break;
+                }
+            }
+        });
+        Ok(Engine { browser, handle })
+    }
     
     const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (+https://371tti.net)";
 
-    pub fn new(builder: LaunchOptionsBuilder) -> Result<Self, Box<dyn Error>> {
-        let browser = Browser::new(builder.build().unwrap())?;
-        Ok(Engine { browser: Arc::new(browser) })
+    pub async fn shutdown(&self) -> Result<(), Box<dyn Error>> {
+        // Abort the background handler task (if still running) and close the browser.
+        self.handle.abort();
+        let mut b = self.browser.lock().await;
+        let _ = b.kill().await;
+        Ok(())
     }
 
-    pub fn capture_element(
+    async fn new_page(&self, url: &str) -> Result<Page, Box<dyn Error>> {
+        let b = self.browser.lock().await;
+        b.clear_cookies().await?;
+        let target_params = CreateTargetParamsBuilder::default()
+            .url(url)
+            .build()?;
+        let page = b.new_page(target_params).await?;
+        page.emulate_geolocation(
+            SetGeolocationOverrideParamsBuilder::default()
+                // 大阪日本橋 err 100m
+                .latitude(34.6676)
+                .longitude(135.5063)
+                .accuracy(100)
+                .build()
+        ).await?;
+        page.emulate_timezone(
+            SetTimezoneOverrideParamsBuilder::default()
+                .timezone_id("Asia/Tokyo")
+                .build()?
+        ).await?;
+        page.enable_stealth_mode_with_agent(Self::UA).await?;
+        Ok(page)
+    }
+
+    pub async fn capture_element(
         &self,
         url: &str,
         selector: &str,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
-        let tab = self.browser.new_tab()?;
-        tab.set_user_agent(Self::UA, None, None)?;
-        let viewport = tab
-            .navigate_to(url)?
-            .wait_for_element(selector)?
-            .get_box_model()?
-            .margin_viewport();
+        let page = self.new_page(url).await?;
 
-        let png_data = tab.capture_screenshot(
-            headless_chrome::protocol::cdp::Page::CaptureScreenshotFormatOption::Png,
-            Some(100),
-            Some(viewport),
-            true,
-        )?;
+        page.wait_for_navigation().await?;
+
+        let element = page.find_element(selector).await?;
+
+        let bounding_box = element.bounding_box().await?;
+
+        let viewport = ViewportBuilder::default()
+            .x(bounding_box.x)
+            .y(bounding_box.y)
+            .width(bounding_box.width)
+            .height(bounding_box.height)
+            .scale(1.0)
+            .build()?;
+
+        let format = ScreenshotParamsBuilder::default()
+            .format(CaptureScreenshotFormat::Png)
+            .clip(viewport)
+            .build();
+
+        let png_data = page.screenshot(format).await?;
+
+        page.close().await?;
 
         Ok(png_data)
     }
 
-    pub fn scraping(
+    pub async fn capture_full_page(
+        &self,
+        url: &str,
+    ) -> Result<Vec<u8>, Box<dyn Error>> {
+        let page = self.new_page(url).await?;
+
+        page.wait_for_navigation().await?;
+
+        let format = ScreenshotParamsBuilder::default()
+            .format(CaptureScreenshotFormat::Png)
+            .full_page(true)
+            .build();
+
+        let png_data = page.screenshot(format).await?;
+
+        page.close().await?;
+
+        Ok(png_data)
+    }
+
+    pub async fn scraping(
         &self,
         url: &str,
         selector: Vec<&str>,
         text_selector: Option<&str>,
         waiting_selector: Option<&str>,
     ) -> Result<ScrapeResults, Box<dyn Error>> {
-        let tab = self.browser.new_tab()?;
-        tab.set_user_agent(Self::UA, None, None)?;
-        tab.navigate_to(url)?.wait_for_element(
-            waiting_selector.unwrap_or("html"),
-        )?;
-        let element = tab.wait_for_element("html")?;
+        let page = self.new_page(url).await?;
 
-        let url = tab.get_url();
+        page.wait_for_navigation().await?;
+
+        page.find_element(waiting_selector.unwrap_or("html")).await?;
+
+        let url = page.url().await?.ok_or("URL is None")?;
         let base_url = url.split('/').take(3).collect::<Vec<&str>>().join("/");
 
-        let document = element.get_content()?;
-        tab.close(true)?;
+        let document = page.content().await?;
+        let text_element = page.find_element(text_selector.unwrap_or("html")).await?;
+        let text = text_element.inner_text().await?.unwrap_or(String::new());
+        page.close().await?;
 
         // parse ready
-        let mut text = String::new();
         let fragments = Html::parse_document(&document);
-        let text_selector = Selector::parse(text_selector.unwrap_or("html")).unwrap();
-        let mut seen = HashSet::new();
-        for el in fragments.select(&text_selector) {
-            if seen.insert(el.id()) {
-                let node = fragments.tree.get(el.id()).unwrap();
-                Self::collect_plain_text(node, &mut text);
-            }
-        }
+
 
         // selectors
         let links_selector = Selector::parse("a[href]").unwrap();
@@ -80,7 +162,7 @@ impl Engine {
         let title_selector = Selector::parse("title").unwrap();
         let lang_selector = Selector::parse("html").unwrap();
 
-        let links: Vec<String> = fragments.select(&links_selector)
+        let mut links: Vec<String> = fragments.select(&links_selector)
             .filter_map(|elem| elem.value().attr("href"))
             .map(|href| Self::url_normalize(&base_url, href))
             .collect();
@@ -98,7 +180,7 @@ impl Engine {
             .filter_map(|elem| elem.value().attr("lang").map(|s| s.to_string()))
             .next();
 
-        let contents: HashMap<String, String> = selector
+        let contents: HashMap<String, Vec<String>> = selector
             .iter()
             .map(|s| {
                 let sel = Selector::parse(s).unwrap();
@@ -106,10 +188,11 @@ impl Engine {
                     .map(|elem| elem.text().collect::<String>().trim().to_string())
                     .collect();
 
-                let joined_text = texts.join(" ");
-                (s.to_string(), joined_text)
+                (s.to_string(), texts)
             })
             .collect();
+
+        links.sort();
 
         Ok(ScrapeResults {
             url,
@@ -134,40 +217,5 @@ impl Engine {
                 format!("{}/{}", base, href)
             }
         }
-    }
-
-    fn collect_plain_text(node: NodeRef<Node>, out: &mut String) {
-        for child in node.children() {
-            match child.value() {
-                Node::Text(t) => {
-                    let s = t.trim();
-                    if !s.is_empty() {
-                        if !out.is_empty() {
-                            out.push(' ');
-                        }
-                        out.push_str(s);
-                    }
-                }
-                Node::Element(e) => {
-                    let tag = e.name();
-                    if tag != "script" && tag != "style" {
-                        Self::collect_plain_text(child, out);
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-impl Default for Engine {
-    fn default() -> Self {
-        let mut builder = LaunchOptionsBuilder::default();
-        builder
-            .disable_default_args(true)
-            .headless(true)
-            .window_size(Some((2560, 1440)))
-            .sandbox(true);
-        Engine::new(builder).expect("Failed to create Engine")
     }
 }

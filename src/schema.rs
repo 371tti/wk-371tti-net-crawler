@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 pub struct ScrapeResults {
     pub url: String,
     pub title: Option<String>,
-    pub contents: HashMap<String, String>,
+    pub contents: HashMap<String, Vec<String>>,
     pub lang: Option<String>,
     pub favicon: Option<String>,
     pub links: Vec<String>,
