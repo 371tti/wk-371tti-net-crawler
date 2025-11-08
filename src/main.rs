@@ -1,528 +1,170 @@
-use std::collections::BTreeMap;
-use std::time::Duration;
+use std::sync::{Arc, Weak};
 
-use anyhow::{Context, Result};
-use clap::Parser;
-use scraper::{Html, Selector, ElementRef};
-use serde::Deserialize;
-use serde_json::json;
-use url::Url;
-use headless_chrome::Browser;
-use clap::ValueEnum;
-use tracing::{info, warn, error};
-use tracing_subscriber::EnvFilter;
+use kurosabi::{Kurosabi, context::ContextMiddleware};
 
-#[derive(Parser, Debug)]
-#[command(author, version, about = "Open a URL and print the HTML using reqwest", long_about = None)]
-struct Args {
-    /// 取得するURL（JSON仕様モードでは不要）
-    url: Option<String>,
-    /// networkidle風に待つための静止時間(ms)。0で無効。
-    #[arg(long, default_value_t = 0)]
-    quiet_ms: u64,
-    /// リクエスト全体のタイムアウト(ms)
-    #[arg(long, default_value_t = 30_000)]
-    timeout_ms: u64,
-    /// 抽出するCSSセレクタ（指定しない場合はページ全体のHTMLを出力）
-    #[arg(short, long)]
-    selector: Option<String>,
-    /// セレクタで一致した要素のinner HTMLを出力（デフォルトはテキスト）
-    #[arg(long, conflicts_with = "attr")]
-    html: bool,
-    /// セレクタで一致した要素の属性を出力（例: --attr href）
-    #[arg(long)]
-    attr: Option<String>,
-    /// 最初の一致のみ出力（デフォルトは全件）
-    #[arg(long)]
-    first: bool,
-    /// JSON仕様ファイルのパス（指定時はURLやその他のCLI引数は無視）
-    #[arg(long)]
-    spec: Option<String>,
-    /// JSON仕様を標準入力から受け取る
-    #[arg(long)]
-    spec_stdin: bool,
-    /// 出力JSON（またはテキスト）を書き出すファイルパス。未指定時は標準出力
-    #[arg(short, long)]
-    out: Option<String>,
-    /// 取得テキストの空白（連続空白/改行）を正規化して出力
-    #[arg(long)]
-    normalize: bool,
+use crate::browser::Engine;
+
+pub mod browser;
+pub mod schema;
+
+#[derive(Clone)]
+pub struct ScraperContext {
+    // store a Weak reference so the server's stored contexts do not keep the
+    // Engine alive forever; handlers should attempt to upgrade when needed.
+    pub engine: Weak<Engine>,
 }
 
-#[derive(Debug, Deserialize)]
-struct JsonSpec {
-    url: String,
-    #[serde(default)]
-    timeout_ms: Option<u64>,
-    #[serde(default)]
-    quiet_ms: Option<u64>,
-    #[serde(default)]
-    normalize: Option<bool>,
-    #[serde(default)]
-    render: Option<RenderOptions>,
-    selectors: Vec<SelectorSpec>,
+impl ScraperContext {
+    /// Create a ScraperContext that holds a Weak reference to the engine.
+    pub fn from_engine(engine: &Arc<Engine>) -> Self {
+        ScraperContext { engine: Arc::downgrade(engine) }
+    }
 }
 
-#[derive(Debug, Deserialize)]
-struct SelectorSpec {
-    name: String,
-    selector: String,
-    #[serde(default)]
-    first: bool,
-    #[serde(default)]
-    unique: bool,
-    #[serde(default)]
-    output: Option<OutputSpec>,
-    #[serde(default)]
-    normalize: Option<bool>,
-}
+impl ContextMiddleware<ScraperContext> for ScraperContext {}
 
-#[derive(Debug, Deserialize)]
-struct OutputSpec {
-    #[serde(rename = "type")]
-    kind: OutputKind,
-    #[serde(default)]
-    attr: Option<String>,
-    #[serde(default)]
-    absolute: bool,
-    #[serde(default)]
-    normalize: Option<bool>,
-}
+#[tokio::main]
+async fn main() {
+    env_logger::try_init_from_env(env_logger::Env::default().default_filter_or("debug,selectors::matching=off,html5ever=off")).unwrap_or_else(|_| ());
 
-#[derive(Debug, Deserialize, Default, Clone)]
-struct RenderOptions {
-    #[serde(default)]
-    enabled: bool,
-    #[serde(default)]
-    wait: Option<WaitKind>,
-    #[serde(default)]
-    selector: Option<String>,
-    #[serde(default)]
-    timeout_ms: Option<u64>,
-    /// DOMに変更が発生しない静止時間(ms)（wait=domidle時に使用）
-    #[serde(default)]
-    dom_idle_ms: Option<u64>,
-}
+    // Create the real Engine Arc and keep ownership in `engine_arc`.
+    let engine = Engine::new().await.expect("Failed to initialize browser engine");
+    let engine_arc = Arc::new(engine);
+    // Create a context that holds only a Weak reference; this prevents the
+    // server from keeping the Engine alive by accident.
+    let ctx = ScraperContext::from_engine(&engine_arc);
+    let mut kurosabi = Kurosabi::with_context(ctx.clone());
 
-#[derive(Debug, Deserialize, Clone, Copy, ValueEnum)]
-#[serde(rename_all = "lowercase")]
-#[value(rename_all = "lowercase")]
-enum WaitKind { Load, Selector, Domcontentloaded, Domidle }
+    kurosabi.get("/", |mut c| async move {
+        c.res.text("Scraping server is running !!");
+        c
+    });
 
-#[derive(Debug, Deserialize, Clone, Copy)]
-#[serde(rename_all = "lowercase")]
-enum OutputKind { Text, Html, Attr }
-
-const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 (+https://371tti.net)";
-
-fn main() {
-    let mut app = kurosabi::Kurosabi::new();
-    // ロガー初期化（RUST_LOG優先、なければinfo）
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .try_init();
-    info!("server starting, registering routes");
-    
-
-    // POST /api -> JSON spec そのまま受け取り実行
-    app.post("/api", |mut c| async move {
-        info!("POST /api received");
-        // 可能ならJSONとして直接パース、ダメならテキスト->JSON
-        let spec_res: Result<JsonSpec, _> = c.req.body_de_struct::<JsonSpec>().await;
-        let reply = match spec_res {
-            Ok(mut spec) => {
-                // url補正
-                spec.url = add_https_if_missing(&spec.url);
-                info!(url = %spec.url, "execute spec (POST)");
-                match execute_spec(spec).await {
-                Ok(out) => {
-                    info!("POST /api success");
-                    serde_json::to_string(&out).unwrap_or_else(|_| "{\"success\":false}".to_string())
-                },
-                Err(e) => {
-                    error!(error = %e, "POST /api failed");
-                    serde_json::to_string(&serde_json::json!({
-                    "success": false,
-                    "error": format!("{}", e)
-                })).unwrap()
-                }
-            }
-            },
-            Err(_e) => {
-                warn!("POST /api parse as struct failed, reading raw body");
-                let body: String = c.req.body_string().await.unwrap_or_default();
-                match serde_json::from_str::<JsonSpec>(&body) {
-                    Ok(mut spec) => {
-                        spec.url = add_https_if_missing(&spec.url);
-                        info!(url = %spec.url, "execute spec (POST, raw body)");
-                        match execute_spec(spec).await {
-                        Ok(out) => {
-                            info!("POST /api success");
-                            serde_json::to_string(&out).unwrap_or_else(|_| "{\"success\":false}".to_string())
-                        },
+    // Capture screenshot endpoint
+    // URL Query Parameters:
+    // - url: URL to capture
+    // - selector: (optional) CSS selector to capture only a specific element
+    //
+    kurosabi.get("/capture", |mut c| async move {
+        let url = c.req.path.get_query("url");
+        if let Some(url) = url {
+            let selector = c.req.path.get_query("selector");
+            if let Some(selector) = selector {
+                // attempt to upgrade Weak -> Arc
+                if let Some(engine) = c.c.engine.upgrade() {
+                    let png_data = engine.capture_element(&url, &selector).await;
+                    match png_data {
+                        Ok(data) => {
+                            c.res.binary(&data);
+                            c.res.header.set("Content-type", "image/png");
+                        }
                         Err(e) => {
-                            error!(error = %e, "POST /api failed");
-                            serde_json::to_string(&serde_json::json!({
-                            "success": false,
-                            "error": format!("{}", e)
-                        })).unwrap()
+                            c.res.text(&format!("Error capturing screenshot: {}", e));
+                            c.res.set_status(500);
                         }
                     }
-                    },
-                    Err(e2) => {
-                        warn!(error = %e2, "POST /api invalid json body");
-                        serde_json::to_string(&serde_json::json!({
-                        "success": false,
-                        "error": format!("invalid json body: {}", e2)
-                    })).unwrap()
+                } else {
+                    c.res.text("Engine not available");
+                    c.res.set_status(503);
+                }
+            } else {
+                if let Some(engine) = c.c.engine.upgrade() {
+                    let png_data = engine.capture_full_page(&url).await;
+                    match png_data {
+                        Ok(data) => {
+                            c.res.binary(&data);
+                            c.res.header.set("Content-type", "image/png");
+                        }
+                        Err(e) => {
+                            c.res.text(&format!("Error capturing screenshot: {}", e));
+                            c.res.set_status(500);
+                        }
                     }
+                } else {
+                    c.res.text("Engine not available");
+                    c.res.set_status(503);
                 }
             }
-        };
-        c.res.json(&reply);
+        } else {
+            c.res.text("Missing 'url' query parameter");
+            c.res.set_status(400);
+        }
         c
     });
 
-    // GET /url/* -> spec.sample.json を読み、url だけ差し替えて実行
-    app.get("/url/*", |mut c| async move {
-        // 完全なパスから /url/ の後ろ部分を抽出
-        let full_path = &c.req.path.path;
-        let url_part = if let Some(idx) = full_path.find("/url/") {
-            &full_path[idx + 5..]
-        } else {
-            full_path
-        };
-        // クエリやフラグメントは消さずにそのまま
-        let param = add_https_if_missing(url_part);
-        info!(url = %param, "GET /url/* received");
-        let spec_path = r"i:\RustBuilds\wk-371tti-net-crawler\spec.sample.json";
-        let reply = match std::fs::read_to_string(spec_path)
-            .ok()
-            .and_then(|s| serde_json::from_str::<JsonSpec>(&s).ok())
-        {
-            Some(mut spec) => {
-                spec.url = param;
-                info!(url = %spec.url, "execute spec (GET)");
-                match execute_spec(spec).await {
-                    Ok(out) => {
-                        info!("GET /url/* success");
-                        serde_json::to_string(&out).unwrap_or_else(|_| "{\"success\":false}".to_string())
-                    },
+    // Scraping endpoint
+    // スクレイピング用のエンドポイント
+    // Url Query Parameters:
+    // - url: URL to scrape
+    // - selectors: Semicolon-separated list of CSS selectors to extract contents. `;` is used as separator
+    // - text_selector: (optional) CSS selector to extract text content
+    // - waiting_selector: (optional) CSS selector to wait for before scraping
+    //
+    // Example:
+    // /scraping?url=https://example.com
+    // /scraping?url=https://ja.wikipedia.org/wiki/%E5%9C%8F%E8%AB%96&text_selector=.mw-body-content
+    // 
+    kurosabi.get("/scraping", |mut c| async move {
+        let url = c.req.path.get_query("url");
+        let selectors_owner = c.req.path.get_query("selectors")
+            .map(|s| s.split(';').map(|item| item.to_string()).collect::<Vec<String>>())
+            .unwrap_or_else(|| vec![]);
+        let selectors = selectors_owner.iter().map(|s| s.as_str()).collect::<Vec<&str>>();
+        let text_selector = c.req.path.get_query("text_selector");
+        let waiting_selector = c.req.path.get_query("waiting_selector");
+        if let Some(url) = url {
+            if let Some(engine) = c.c.engine.upgrade() {
+                let result = engine.scraping(&url, selectors, text_selector.as_deref(), waiting_selector.as_deref()).await;
+                match result {
+                    Ok(scrape_results) => {
+                        c.res.json_value(&serde_json::to_value(scrape_results).unwrap());
+                    }
                     Err(e) => {
-                        error!(error = %e, "GET /url/* failed");
-                        serde_json::to_string(&serde_json::json!({
-                        "success": false,
-                        "error": format!("{}", e)
-                    })).unwrap()
+                        c.res.text(&format!("Error during scraping: {}", e));
+                        c.res.set_status(500);
                     }
                 }
+            } else {
+                c.res.text("Engine not available");
+                c.res.set_status(503);
             }
-            None => {
-                error!("failed to read or parse spec.sample.json");
-                serde_json::to_string(&serde_json::json!({
-                "success": false,
-                "error": format!("failed to read or parse spec: {}", spec_path)
-            })).unwrap()
-            }
-        };
-        c.res.json(&reply);
+        } else {
+            c.res.text("Missing 'url' query parameter");
+            c.res.set_status(400);
+        }
+        c
+
+    });
+
+    kurosabi.not_found_handler(|mut c| async move {
+        c.res.text("invalid endpoint");
         c
     });
 
-    app.not_found_handler(|mut c| async move {
-        c.res.text("404 Not Found");
-        c.res.set_status(404);
-        c
+    let server_handle = tokio::spawn(async move {
+        kurosabi.server()
+            .host([0,0,0,0])
+            .port(80)
+            .build().run_async().await;
     });
 
-    app
-        .server()
-        .host([0,0,0,0])
-        .thread(32)
-        .port(88)
-        .build()
-        .run();
-}
 
-fn has_class(el: &ElementRef, class: &str) -> bool {
-    if let Some(c) = el.value().attr("class") {
-        c.split_whitespace().any(|s| s == class)
+
+
+
+
+
+
+    println!("server started, waiting for Ctrl-C...");
+    if let Err(e) = tokio::signal::ctrl_c().await {
+        eprintln!("failed to listen for ctrl_c: {}", e);
     } else {
-        false
-    }
-}
-
-
-async fn execute_spec(spec: JsonSpec) -> Result<serde_json::Value> {
-    // 既定値
-    let timeout_ms = spec.timeout_ms.unwrap_or(30_000);
-    let quiet_ms = spec.quiet_ms.unwrap_or(0);
-    let normalize_global = spec.normalize.unwrap_or(false);
-    info!(url = %spec.url, quiet_ms, timeout_ms, normalize = %normalize_global, "execute_spec start");
-
-    // セキュリティ: ローカル/内部ネットワーク/禁止スキームを拒否
-    validate_target_url(&spec.url)?;
-
-    // レンダリングが必要か分岐
-    let render = spec.render.clone().unwrap_or_default();
-    let (final_url, status, body) = if render.enabled {
-            info!(wait = ?render.wait, selector = ?render.selector, timeout = ?render.timeout_ms, dom_idle_ms = ?render.dom_idle_ms, "render enabled");
-            // Headless Chromeでナビゲートして待機
-            let browser = Browser::default().context("failed to launch headless Chrome")?;
-            let tab = browser.new_tab().context("failed to open new tab")?;
-            tab.navigate_to(&spec.url)
-                .with_context(|| format!("failed to navigate to {}", spec.url))?;
-
-            // 待機条件
-            match render.wait.unwrap_or(WaitKind::Load) {
-                WaitKind::Load | WaitKind::Domcontentloaded => {
-                    tab.wait_until_navigated().context("wait_until_navigated failed")?;
-                }
-                WaitKind::Selector => {
-                    let sel = render.selector.as_deref().unwrap_or("body");
-                    let to = Duration::from_millis(render.timeout_ms.unwrap_or(timeout_ms));
-                    tab.wait_for_element_with_custom_timeout(sel, to)
-                        .with_context(|| format!("selector not found within timeout: {}", sel))?;
-                }
-                                WaitKind::Domidle => {
-                    let idle_ms = render.dom_idle_ms.unwrap_or(1000);
-                    let max_wait = render.timeout_ms.unwrap_or(timeout_ms);
-                    let start = std::time::Instant::now();
-                    loop {
-                                                let js = r#"(function(){
-    if (!window.__wk_lastMutation) {
-        window.__wk_lastMutation = Date.now();
-        new MutationObserver(function(){ window.__wk_lastMutation = Date.now(); })
-            .observe(document, {subtree:true, childList:true, attributes:true, characterData:true});
-    }
-    return Date.now() - window.__wk_lastMutation;
-})()"#;
-                                                let ro = tab.evaluate(js, false).context("failed to evaluate dom idle script")?;
-                        let since_ms = ro.value.and_then(|v| v.as_f64()).unwrap_or(0.0);
-                        if since_ms >= idle_ms as f64 { break; }
-                        if start.elapsed() > Duration::from_millis(max_wait) { break; }
-                        std::thread::sleep(Duration::from_millis(100));
-                    }
-                }
-            }
-                        if quiet_ms > 0 { std::thread::sleep(Duration::from_millis(quiet_ms)); }
-
-                        // Remove script/style/noscript elements in the rendered DOM before
-                        // extracting content so they don't pollute text extraction.
-                        let remove_js = r#"(function(){
-    document.querySelectorAll('script,style,noscript').forEach(function(e){ e.remove(); });
-    return true;
-})()"#;
-                        let _ = tab.evaluate(remove_js, false).context("failed to remove script/style elements")?;
-                        let html = tab.get_content().context("failed to get page content")?;
-            let current_url = Url::parse(tab.get_url().as_str()).unwrap_or(Url::parse(&spec.url).unwrap());
-
-            // ステータスは別途軽量に取得（必須でなければスキップ可）
-            let client = reqwest::Client::builder()
-                .user_agent(UA)
-                .redirect(reqwest::redirect::Policy::limited(10))
-                .timeout(Duration::from_millis(timeout_ms))
-                .brotli(true)
-                .gzip(true)
-                .deflate(true)
-                .zstd(true)
-                .build()
-                .context("failed to build HTTP client")?;
-            let status = client.get(current_url.as_str()).send().await.map(|r| r.status().as_u16()).unwrap_or(200);
-            info!(status, url = %current_url, html_len = html.len(), "rendered and fetched status");
-            (current_url, status, html)
-        } else {
-            // 通常のHTTP取得
-            let client = reqwest::Client::builder()
-                .user_agent(UA)
-                .redirect(reqwest::redirect::Policy::limited(10))
-                .timeout(Duration::from_millis(timeout_ms))
-                .brotli(true)
-                .gzip(true)
-                .deflate(true)
-                .zstd(true)
-                .build()
-                .context("failed to build HTTP client")?;
-            let resp = client
-                .get(&spec.url)
-                .send()
-                .await
-                .with_context(|| format!("failed to GET {}", spec.url))?;
-            let status = resp.status().as_u16();
-            let final_url = resp.url().clone();
-            let body = resp.text().await.context("failed to read response body as text")?;
-            if quiet_ms > 0 { tokio::time::sleep(Duration::from_millis(quiet_ms)).await; }
-        info!(status, url = %final_url, body_len = body.len(), "http fetched");
-            (final_url, status, body)
-        };
-
-    // 抽出
-    let document = Html::parse_document(&body);
-    // nameごとに配列へ集約
-    let mut results: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    info!(selectors = spec.selectors.len(), "start selecting");
-    for spec_item in spec.selectors.iter() {
-        let selector = match Selector::parse(&spec_item.selector) {
-            Ok(s) => s,
-            Err(_e) => {
-                warn!(selector = %spec_item.selector, "invalid CSS selector, skip");
-                continue;
-            }
-        };
-        let mut values: Vec<String> = Vec::new();
-        // If the selector targets the whole page (body or html), don't require the
-        // element to have .wk-visible — those root containers won't be leaf nodes
-        // and thus won't receive the marker class in the render JS.
-        let sel_trim = spec_item.selector.trim();
-        let is_whole_page = sel_trim.eq_ignore_ascii_case("body") || sel_trim.eq_ignore_ascii_case("html");
-        for el in document.select(&selector) {
-            // skip <script> and <style> elements entirely
-            if let Some(name) = el.value().name().to_lowercase().as_str().get(0..) {
-                if name == "script" || name == "style" {
-                    continue;
-                }
-            }
-            // When rendered, prefer visible leaf nodes for descriptions unless the
-            // selector explicitly requests the whole page container (body/html).
-            if spec.render.as_ref().map(|r| r.enabled).unwrap_or(false)
-                && spec_item.name == "descriptions"
-                && !is_whole_page
-            {
-                if !has_class(&el, "wk-visible") { continue; }
-            }
-            let out = match &spec_item.output {
-                Some(out) => match out.kind {
-                    OutputKind::Text => normalize_if(el.text().collect::<String>(), spec_item.normalize, out.normalize, normalize_global),
-                    OutputKind::Html => el.inner_html(),
-                    OutputKind::Attr => {
-                        if let Some(attr) = &out.attr {
-                            if let Some(v) = el.value().attr(attr.as_str()) {
-                                if out.absolute {
-                                    normalize_if(absolutize_url(v, &final_url).unwrap_or_else(|| v.to_string()), spec_item.normalize, out.normalize, normalize_global)
-                                } else {
-                                    normalize_if(v.to_string(), spec_item.normalize, out.normalize, normalize_global)
-                                }
-                            } else { continue; }
-                        } else { continue; }
-                    }
-                },
-                None => normalize_if(el.text().collect::<String>(), spec_item.normalize, None, normalize_global),
-            };
-            if !out.is_empty() { values.push(out); }
-            if spec_item.first { break; }
-        }
-        if spec_item.unique {
-            values.sort();
-            values.dedup();
-        }
-        results.entry(spec_item.name.clone()).or_default().extend(values);
-    }
-
-    // JSONへ変換
-    let results_json: BTreeMap<String, serde_json::Value> = results
-        .into_iter()
-        .map(|(k, v)| (k, json!(v)))
-        .collect();
-    let total_items: usize = results_json.values().map(|v| v.as_array().map(|a| a.len()).unwrap_or(0)).sum();
-    info!(keys = results_json.len(), total_items, "extraction done");
-
-    let out_json = json!({
-        "success": true,
-        "url": final_url.as_str(),
-        "status": status,
-        "results": results_json,
-    });
-    Ok(out_json)
-}
-
-fn absolutize_url(input: &str, base: &Url) -> Option<String> {
-    if let Ok(u) = Url::parse(input) {
-        return Some(u.to_string());
-    }
-    base.join(input).ok().map(|u| u.to_string())
-}
-
-fn normalize_text(mut s: String) -> String {
-    // 改行やタブをスペースに、複数空白を1つに、前後トリム
-    // まずWindows系改行をLFへ
-    s = s.replace(['\r', '\n', '\t'], " ");
-    let mut out = String::with_capacity(s.len());
-    let mut prev_space = false;
-    for ch in s.chars() {
-        if ch.is_whitespace() {
-            if !prev_space { out.push(' '); prev_space = true; }
-        } else {
-            out.push(ch);
-            prev_space = false;
+        println!("received Ctrl-C, killing browser engine...");
+        if let Err(e) = engine_arc.shutdown().await {
+            eprintln!("engine shutdown error: {}", e);
         }
     }
-    out.trim().to_string()
-}
 
-fn normalize_if(s: String, sel_norm: Option<bool>, out_norm: Option<bool>, global_norm: bool) -> String {
-    let enabled = out_norm.or(sel_norm).unwrap_or(global_norm);
-    if enabled { normalize_text(s) } else { s }
-}
-
-/// 先頭に https:// がなければ付与
-fn add_https_if_missing(url: &str) -> String {
-    let u = url.trim();
-    if u.starts_with("http://") || u.starts_with("https://") {
-        u.to_string()
-    } else {
-        format!("https://{}", u)
-    }
-}
-
-/// 危険な(ローカル/内部/非 http(s)) URL を拒否
-fn validate_target_url(raw: &str) -> Result<()> {
-    let url = Url::parse(raw).context("invalid url")?;
-    let scheme = url.scheme().to_ascii_lowercase();
-    if scheme != "http" && scheme != "https" {
-        anyhow::bail!("disallowed scheme: {}", scheme);
-    }
-    if let Some(host) = url.host_str() {
-        let host_lc = host.to_ascii_lowercase();
-        // 典型的なローカルホスト名
-        if host_lc == "localhost" || host_lc == "ip6-localhost" { anyhow::bail!("disallowed host: {}", host); }
-        // 明示的 IPv4/IPv6 リテラル判定
-        if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-            if is_private_ip(&ip) { anyhow::bail!("disallowed private address: {}", ip); }
-        } else {
-            // 簡易 FQDN ベース拒否（.local, .internal 等）
-            if host_lc.ends_with(".local") || host_lc.ends_with(".internal") || host_lc.ends_with(".localhost") {
-                anyhow::bail!("disallowed pseudo-local domain: {}", host);
-            }
-        }
-    } else {
-        anyhow::bail!("url has no host");
-    }
-    Ok(())
-}
-
-fn is_private_ip(ip: &std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => {
-            let octets = v4.octets();
-            match octets {
-                [10, _, _, _] => true,                      // 10.0.0.0/8
-                [172, b, _, _] if (16..=31).contains(&b) => true, // 172.16.0.0/12
-                [192, 168, _, _] => true,                   // 192.168.0.0/16
-                [127, _, _, _] => true,                     // loopback
-                [169, 254, _, _] => true,                   // link-local
-                [0, 0, 0, 0] => true,                       // INADDR_ANY
-                _ => false,
-            }
-        }
-        std::net::IpAddr::V6(v6) => {
-            let segments = v6.segments();
-            // loopback ::1
-            if *v6 == std::net::Ipv6Addr::LOCALHOST { return true; }
-            // link-local fe80::/10 (fe80 - febf)
-            if (0xfe80..=0xfebf).contains(&(segments[0])) { return true; }
-            // unique local fc00::/7 (fc00 - fdff)
-            if (0xfc00..=0xfdff).contains(&(segments[0])) { return true; }
-            false
-        }
-    }
+    println!("killed browser engine, please ctrl-c again to shutdown server...");
+    server_handle.abort();
 }
