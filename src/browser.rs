@@ -182,7 +182,7 @@ impl Engine {
         let contents: HashMap<String, Vec<String>> = selector
             .iter()
             .map(|s| {
-                let sel = Selector::parse(s).unwrap();
+                let sel = Selector::parse(s)?;
                 let texts: Vec<String> = fragments.select(&sel)
                     .map(|elem| elem.text().collect::<String>().trim().to_string())
                     .collect();
