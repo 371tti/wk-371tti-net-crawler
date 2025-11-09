@@ -1,3 +1,4 @@
+use std::time::Duration;
 use std::{collections::HashMap, error::Error};
 use std::sync::Arc;
 
@@ -29,6 +30,7 @@ impl Engine {
                     }
                 )
                 .disable_cache()
+                .no_sandbox()
                 .headless_mode(HeadlessMode::New)
                 .build()?,
         ).await?;
@@ -81,10 +83,13 @@ impl Engine {
         &self,
         url: &str,
         selector: &str,
+        wait: Duration,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
         let page = self.new_page(url).await?;
 
         page.wait_for_navigation().await?;
+
+        tokio::time::sleep(wait).await;
 
         let element = page.find_element(selector).await?;
 
@@ -113,10 +118,13 @@ impl Engine {
     pub async fn capture_full_page(
         &self,
         url: &str,
+        wait: Duration,
     ) -> Result<Vec<u8>, Box<dyn Error>> {
         let page = self.new_page(url).await?;
 
         page.wait_for_navigation().await?;
+
+        tokio::time::sleep(wait).await;
 
         let format = ScreenshotParamsBuilder::default()
             .format(CaptureScreenshotFormat::Png)
@@ -182,7 +190,7 @@ impl Engine {
         let contents: HashMap<String, Vec<String>> = selector
             .iter()
             .map(|s| {
-                let sel = Selector::parse(s)?;
+                let sel = Selector::parse(s).unwrap();
                 let texts: Vec<String> = fragments.select(&sel)
                     .map(|elem| elem.text().collect::<String>().trim().to_string())
                     .collect();

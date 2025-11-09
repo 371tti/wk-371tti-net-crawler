@@ -47,12 +47,16 @@ async fn main() {
     //
     kurosabi.get("/capture", |mut c| async move {
         let url = c.req.path.get_query("url");
+        let wait_duration = c.req.path.get_query("wait")
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_millis(0));
         if let Some(url) = url {
             let selector = c.req.path.get_query("selector");
             if let Some(selector) = selector {
                 // attempt to upgrade Weak -> Arc
                 if let Some(engine) = c.c.engine.upgrade() {
-                    let png_data = engine.capture_element(&url, &selector).await;
+                    let png_data = engine.capture_element(&url, &selector, wait_duration).await;
                     match png_data {
                         Ok(data) => {
                             c.res.binary(&data);
@@ -69,7 +73,7 @@ async fn main() {
                 }
             } else {
                 if let Some(engine) = c.c.engine.upgrade() {
-                    let png_data = engine.capture_full_page(&url).await;
+                    let png_data = engine.capture_full_page(&url, wait_duration).await;
                     match png_data {
                         Ok(data) => {
                             c.res.binary(&data);
@@ -144,7 +148,7 @@ async fn main() {
     let server_handle = tokio::spawn(async move {
         kurosabi.server()
             .host([0,0,0,0])
-            .port(800)
+            .port(80)
             .build().run_async().await;
     });
 
