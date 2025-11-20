@@ -3,14 +3,15 @@ use std::{collections::HashMap, error::Error};
 use std::sync::Arc;
 
 use chromiumoxide::{Browser, BrowserConfig, Page, browser::HeadlessMode, cdp::browser_protocol::{emulation::{SetGeolocationOverrideParamsBuilder, SetTimezoneOverrideParamsBuilder}, page::{CaptureScreenshotFormat, ViewportBuilder}, target::CreateTargetParamsBuilder}, handler::viewport::Viewport, page::ScreenshotParamsBuilder};
-use tokio::sync::Mutex as AsyncMutex;
+use tokio::sync::RwLock;
 use futures::StreamExt;
 use scraper::{Html, Selector};
 
 use crate::schema::ScrapeResults;
+use crate::utils::{self, url_normalize};
 
 pub struct Engine {
-    pub browser: Arc<AsyncMutex<Browser>>,
+    pub browser: Arc<RwLock<Browser>>,
     pub handle: tokio::task::JoinHandle<()>,
 }
 
@@ -18,7 +19,6 @@ impl Engine {
     pub async fn new() -> Result<Self, Box<dyn Error>> {
         let (browser, mut handler) = Browser::launch(
             BrowserConfig::builder()
-                .window_size(2560, 1440)
                 .viewport(
                     Viewport {
                         width: 2560,
@@ -30,11 +30,11 @@ impl Engine {
                     }
                 )
                 .disable_cache()
-                .no_sandbox()
+                // .no_sandbox() // need if running as root
                 .headless_mode(HeadlessMode::New)
                 .build()?,
         ).await?;
-        let browser = Arc::new(AsyncMutex::new(browser));
+        let browser = Arc::new(RwLock::new(browser));
         let handle = tokio::task::spawn(async move {
             while let Some(h) = handler.next().await {
                 if h.is_err() {
@@ -50,16 +50,17 @@ impl Engine {
     pub async fn shutdown(&self) -> Result<(), Box<dyn Error>> {
         // Abort the background handler task (if still running) and close the browser.
         self.handle.abort();
-        let mut b = self.browser.lock().await;
+        let mut b = self.browser.write().await;
         let _ = b.kill().await;
         Ok(())
     }
 
     async fn new_page(&self, url: &str) -> Result<Page, Box<dyn Error>> {
-        let b = self.browser.lock().await;
+        let decoded_url = utils::url_decode(url);
+        let b = self.browser.read().await;
         b.clear_cookies().await?;
         let target_params = CreateTargetParamsBuilder::default()
-            .url(url)
+            .url(&decoded_url)
             .build()?;
         let page = b.new_page(target_params).await?;
         page.emulate_geolocation(
@@ -171,12 +172,12 @@ impl Engine {
 
         let mut links: Vec<String> = fragments.select(&links_selector)
             .filter_map(|elem| elem.value().attr("href"))
-            .map(|href| Self::url_normalize(&base_url, href))
+            .map(|href| url_normalize(&base_url, href))
             .collect();
 
         let favicon: Option<String> = fragments.select(&favicon_selector)
             .filter_map(|elem| elem.value().attr("href"))
-            .map(|href| Self::url_normalize(&base_url, href))
+            .map(|href| url_normalize(&base_url, href))
             .next();
 
         let title: Option<String> = fragments.select(&title_selector)
@@ -211,18 +212,5 @@ impl Engine {
             document,
             text,
         })
-    }
-
-    fn url_normalize(base_url: &str, href: &str) -> String {
-        if href.starts_with("http://") || href.starts_with("https://") {
-            href.to_string()
-        } else {
-            let base = base_url.trim_end_matches('/');
-            if href.starts_with('/') {
-                format!("{}/{}", base, href.trim_start_matches('/'))
-            } else {
-                format!("{}/{}", base, href)
-            }
-        }
     }
 }
