@@ -16,16 +16,16 @@ pub struct ScrapeResults {
 
 /// success が bool の API レスポンスに対応 (例: {"success":true, ...} / {"success":false, "error":...})
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[serde(tag = "success")]
 pub enum ScraperResult {
+    #[serde(rename = "true")]
     Success {
-        success: bool, // 常に true を想定
         status: u16,
         url: String,
         results: ScrapeResults,
     },
+    #[serde(rename = "false")]
     Failed {
-        success: bool, // 常に false を想定
         error: String,
     },
 }

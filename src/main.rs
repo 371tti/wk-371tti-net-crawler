@@ -1,11 +1,12 @@
-use std::sync::{Arc, Weak};
+use std::{sync::{Arc, Weak}, time::Duration};
 
 use kurosabi::{Kurosabi, context::ContextMiddleware};
 
-use crate::browser::Engine;
+use crate::{browser::Engine, schema::ScraperResult};
 
 pub mod browser;
 pub mod schema;
+pub mod utils;
 
 #[derive(Clone)]
 pub struct ScraperContext {
@@ -23,7 +24,7 @@ impl ScraperContext {
 
 impl ContextMiddleware<ScraperContext> for ScraperContext {}
 
-#[tokio::main]
+#[tokio::main(flavor = "multi_thread", worker_threads = 16)]
 async fn main() {
     env_logger::try_init_from_env(env_logger::Env::default().default_filter_or("debug,selectors::matching=off,html5ever=off")).unwrap_or_else(|_| ());
 
@@ -47,12 +48,16 @@ async fn main() {
     //
     kurosabi.get("/capture", |mut c| async move {
         let url = c.req.path.get_query("url");
+        let wait_duration = c.req.path.get_query("wait")
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_millis(0));
         if let Some(url) = url {
             let selector = c.req.path.get_query("selector");
             if let Some(selector) = selector {
                 // attempt to upgrade Weak -> Arc
                 if let Some(engine) = c.c.engine.upgrade() {
-                    let png_data = engine.capture_element(&url, &selector).await;
+                    let png_data = engine.capture_element(&url, &selector, wait_duration).await;
                     match png_data {
                         Ok(data) => {
                             c.res.binary(&data);
@@ -69,7 +74,7 @@ async fn main() {
                 }
             } else {
                 if let Some(engine) = c.c.engine.upgrade() {
-                    let png_data = engine.capture_full_page(&url).await;
+                    let png_data = engine.capture_full_page(&url, wait_duration).await;
                     match png_data {
                         Ok(data) => {
                             c.res.binary(&data);
@@ -117,23 +122,33 @@ async fn main() {
                 let result = engine.scraping(&url, selectors, text_selector.as_deref(), waiting_selector.as_deref()).await;
                 match result {
                     Ok(scrape_results) => {
-                        c.res.json_value(&serde_json::to_value(scrape_results).unwrap());
+                        let result = ScraperResult::Success {
+                            status: 200,
+                            url: url.clone(),
+                            results: scrape_results,
+                        };
+                        c.res.json_value(&serde_json::to_value(result).unwrap());
                     }
                     Err(e) => {
-                        c.res.text(&format!("Error during scraping: {}", e));
-                        c.res.set_status(500);
+                        let result = ScraperResult::Failed {
+                            error: format!("Error during scraping: {}", e),
+                        };
+                        c.res.json_value(&serde_json::to_value(result).unwrap());
                     }
                 }
             } else {
-                c.res.text("Engine not available");
-                c.res.set_status(503);
+                let result = ScraperResult::Failed {
+                    error: "Engine not available".to_string(),
+                };
+                c.res.json_value(&serde_json::to_value(result).unwrap());
             }
         } else {
-            c.res.text("Missing 'url' query parameter");
-            c.res.set_status(400);
+            let result = ScraperResult::Failed {
+                error: "Missing 'url' query parameter".to_string(),
+            };
+            c.res.json_value(&serde_json::to_value(result).unwrap());
         }
         c
-
     });
 
     kurosabi.not_found_handler(|mut c| async move {
@@ -141,12 +156,13 @@ async fn main() {
         c
     });
 
-    let server_handle = tokio::spawn(async move {
         kurosabi.server()
             .host([0,0,0,0])
-            .port(80)
+            .thread(16)
+            .port(3773)
+            .nodelay(true)
+            .http_keepalive_timeout(Duration::from_secs(300))
             .build().run_async().await;
-    });
 
 
 
@@ -166,5 +182,4 @@ async fn main() {
     }
 
     println!("killed browser engine, please ctrl-c again to shutdown server...");
-    server_handle.abort();
 }
