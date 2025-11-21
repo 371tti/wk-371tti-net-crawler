@@ -1,30 +1,34 @@
+#[cfg(not(feature = "lib"))]
 use std::{borrow::Cow, sync::{Arc, Weak}, time::Duration};
-
+#[cfg(not(feature = "lib"))]
 use kurosabi::{Kurosabi, context::ContextMiddleware};
+#[cfg(not(feature = "lib"))]
 use urlencoding::decode;
-
+#[cfg(not(feature = "lib"))]
 use crate::{browser::Engine, schema::ScraperResult};
-
+#[cfg(not(feature = "lib"))]
 pub mod browser;
+#[cfg(not(feature = "lib"))]
 pub mod schema;
+#[cfg(not(feature = "lib"))]
 pub mod utils;
-
+#[cfg(not(feature = "lib"))]
 #[derive(Clone)]
 pub struct ScraperContext {
     // store a Weak reference so the server's stored contexts do not keep the
     // Engine alive forever; handlers should attempt to upgrade when needed.
     pub engine: Weak<Engine>,
 }
-
+#[cfg(not(feature = "lib"))]
 impl ScraperContext {
     /// Create a ScraperContext that holds a Weak reference to the engine.
     pub fn from_engine(engine: &Arc<Engine>) -> Self {
         ScraperContext { engine: Arc::downgrade(engine) }
     }
 }
-
+#[cfg(not(feature = "lib"))]
 impl ContextMiddleware<ScraperContext> for ScraperContext {}
-
+#[cfg(not(feature = "lib"))]
 #[tokio::main(flavor = "multi_thread", worker_threads = 16)]
 async fn main() {
     env_logger::try_init_from_env(env_logger::Env::default().default_filter_or("debug,selectors::matching=off,html5ever=off")).unwrap_or_else(|_| ());

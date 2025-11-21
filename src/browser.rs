@@ -1,20 +1,29 @@
+#[cfg(not(feature = "lib"))]
 use std::time::Duration;
+#[cfg(not(feature = "lib"))]
 use std::{collections::HashMap, error::Error};
+#[cfg(not(feature = "lib"))]
 use std::sync::Arc;
 
+#[cfg(not(feature = "lib"))]
 use chromiumoxide::{Browser, BrowserConfig, Page, browser::HeadlessMode, cdp::browser_protocol::{emulation::{SetGeolocationOverrideParamsBuilder, SetTimezoneOverrideParamsBuilder}, page::{CaptureScreenshotFormat, ViewportBuilder}, target::CreateTargetParamsBuilder}, handler::viewport::Viewport, page::ScreenshotParamsBuilder};
+#[cfg(not(feature = "lib"))]
 use tokio::sync::RwLock;
+#[cfg(not(feature = "lib"))]
 use futures::StreamExt;
+#[cfg(not(feature = "lib"))]
 use scraper::{Html, Selector};
 
+#[cfg(not(feature = "lib"))]
 use crate::schema::ScrapeResults;
+#[cfg(not(feature = "lib"))]
 use crate::utils::{self, url_normalize};
-
+#[cfg(not(feature = "lib"))]
 pub struct Engine {
     pub browser: Arc<RwLock<Browser>>,
     pub handle: tokio::task::JoinHandle<()>,
 }
-
+#[cfg(not(feature = "lib"))]
 impl Engine {
     pub async fn new() -> Result<Self, Box<dyn Error>> {
         let (browser, mut handler) = Browser::launch(

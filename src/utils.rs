@@ -7,6 +7,7 @@
 ///
 /// Use `url_decode` for a forgiving decode and `url_decode_strict` if you
 /// want an error on malformed percent-escapes.
+#[cfg(not(feature = "lib"))]
 pub fn url_decode(input: &str) -> String {
 	match url_decode_strict(input) {
 		Ok(s) => s,
@@ -44,6 +45,7 @@ pub fn url_decode(input: &str) -> String {
 }
 
 /// Strict decoder: returns Err when encountering malformed `%` sequences.
+#[cfg(not(feature = "lib"))]
 pub fn url_decode_strict(input: &str) -> Result<String, String> {
 	let mut out: Vec<u8> = Vec::with_capacity(input.len());
 	let bytes = input.as_bytes();
@@ -72,6 +74,7 @@ pub fn url_decode_strict(input: &str) -> Result<String, String> {
 	}
 }
 
+#[cfg(not(feature = "lib"))]
 fn from_hex(b: u8) -> Option<u8> {
 	match b {
 		b'0'..=b'9' => Some(b - b'0'),
@@ -81,6 +84,7 @@ fn from_hex(b: u8) -> Option<u8> {
 	}
 }
 
+#[cfg(not(feature = "lib"))]
 pub fn url_normalize(base_url: &str, href: &str) -> String {
     if href.starts_with("http://") || href.starts_with("https://") {
         href.to_string()
@@ -94,6 +98,7 @@ pub fn url_normalize(base_url: &str, href: &str) -> String {
     }
 }
 
+#[cfg(not(feature = "lib"))]
 #[cfg(test)]
 mod tests {
 	use super::*;
