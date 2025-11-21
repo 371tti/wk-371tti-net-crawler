@@ -1,29 +1,22 @@
-#[cfg(not(feature = "lib"))]
 use std::time::Duration;
-#[cfg(not(feature = "lib"))]
 use std::{collections::HashMap, error::Error};
-#[cfg(not(feature = "lib"))]
 use std::sync::Arc;
 
-#[cfg(not(feature = "lib"))]
+
 use chromiumoxide::{Browser, BrowserConfig, Page, browser::HeadlessMode, cdp::browser_protocol::{emulation::{SetGeolocationOverrideParamsBuilder, SetTimezoneOverrideParamsBuilder}, page::{CaptureScreenshotFormat, ViewportBuilder}, target::CreateTargetParamsBuilder}, handler::viewport::Viewport, page::ScreenshotParamsBuilder};
-#[cfg(not(feature = "lib"))]
 use tokio::sync::RwLock;
-#[cfg(not(feature = "lib"))]
 use futures::StreamExt;
-#[cfg(not(feature = "lib"))]
 use scraper::{Html, Selector};
 
-#[cfg(not(feature = "lib"))]
-use crate::schema::ScrapeResults;
-#[cfg(not(feature = "lib"))]
-use crate::utils::{self, url_normalize};
-#[cfg(not(feature = "lib"))]
+use super::schema::ScrapeResults;
+
+use super::utils;
+
 pub struct Engine {
     pub browser: Arc<RwLock<Browser>>,
     pub handle: tokio::task::JoinHandle<()>,
 }
-#[cfg(not(feature = "lib"))]
+
 impl Engine {
     pub async fn new() -> Result<Self, Box<dyn Error>> {
         let (browser, mut handler) = Browser::launch(
@@ -181,12 +174,12 @@ impl Engine {
 
         let mut links: Vec<String> = fragments.select(&links_selector)
             .filter_map(|elem| elem.value().attr("href"))
-            .map(|href| url_normalize(&base_url, href))
+            .map(|href| utils::url_normalize(&base_url, href))
             .collect();
 
         let favicon: Option<String> = fragments.select(&favicon_selector)
             .filter_map(|elem| elem.value().attr("href"))
-            .map(|href| url_normalize(&base_url, href))
+            .map(|href| utils::url_normalize(&base_url, href))
             .next();
 
         let title: Option<String> = fragments.select(&title_selector)

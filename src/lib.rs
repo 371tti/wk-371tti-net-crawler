@@ -1,36 +1,82 @@
 pub mod schema;
+#[cfg(feature = "standalone")]
+pub mod browser;
+#[cfg(feature = "standalone")]
+pub mod utils;
 
-use std::time::Duration;
+use std::{error::Error, time::Duration};
 
-use reqwest::{Error, Response};
+use reqwest::{Response};
 use urlencoding::encode;
 
+#[cfg(feature = "standalone")]
+use crate::browser::Engine;
 use crate::schema::ScraperResult;
 
 
 
 pub struct Client {
+    #[cfg(not(feature = "standalone"))]
     pub base_url: String,
+    #[cfg(feature = "standalone")]
+    pub engine: Engine,
 }
 
 impl Client {
     /// Create a new Client with the specified base URL
+    #[cfg(not(feature = "standalone"))]
     pub fn new(base_url: &str) -> Self {
         Self {
             base_url: base_url.to_string(),
         }
     }
+    #[cfg(feature = "standalone")]
+    pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
+        let engine = Engine::new().await?;
+        Ok(Self {
+            engine,
+        })
+    }
 
     /// Capture API
     /// screen capture API request builder
-    pub fn capture_api(&self, url: &str) -> CaptureAPIBuilder {
-        CaptureAPIBuilder::new(url)
+    pub async fn capture_api(&self, api: CaptureAPI) -> Result<Vec<u8>, Box<dyn Error>> {
+        #[cfg(not(feature = "standalone"))]
+        {
+            let url = format!("{}{}", self.base_url, api.generate_url());
+            let resp: Response = reqwest::get(&url).await?;
+            let bytes = resp.bytes().await?;
+            Ok(bytes.to_vec())
+        }
+        #[cfg(feature = "standalone")]
+        {
+            self.engine.capture_element(
+                &api.url, 
+                api.selector.as_deref().unwrap_or(""), 
+                api.wait
+            ).await
+        }
     }
 
     /// Scraper API
     /// web scraping API request builder
-    pub fn scraper_api(&self, url: &str) -> ScraperAPIBuilder {
-        ScraperAPIBuilder::new(url)
+    pub async fn scraper(&self, api: ScrapeAPI) -> Result<ScraperResult, Box<dyn Error>> {
+        #[cfg(not(feature = "standalone"))]
+        {
+            let url = format!("{}{}", self.base_url, api.generate_url());
+            let resp: Response = reqwest::get(&url).await?;
+            let scraper_result: ScraperResult = resp.json().await?;
+            Ok(scraper_result)
+        }
+        #[cfg(feature = "standalone")]
+        {
+            self.engine.scraping(
+                &api.url, 
+                api.selectors.iter().map(|s| s.as_str()).collect(), 
+                api.text_selector.as_deref(), 
+                api.waiting_selector.as_deref()
+            ).await.map(|res| ScraperResult::Success { status: 200, url: api.url, results: res })
+        }
     }
 }
 
@@ -48,6 +94,7 @@ pub struct CaptureAPI {
 }
 
 impl ScrapeAPI {
+    #[cfg(not(feature = "standalone"))]
     pub(crate) fn generate_url(&self) -> String {
         let mut query = vec![format!("url={}", self.url)];
         for selector in &self.selectors {
@@ -61,17 +108,10 @@ impl ScrapeAPI {
         }
         format!("/scraping?{}", query.join("&"))
     }
-
-    /// Fetch the scraping result from the API
-    pub async fn fetch(&self, client: &Client) -> Result<ScraperResult, Error> {
-        let url = format!("{}{}", client.base_url, self.generate_url());
-        let resp: Response = reqwest::get(&url).await?;
-        let scraper_result: ScraperResult = resp.json().await?;
-        Ok(scraper_result)
-    }
 }
 
 impl CaptureAPI {
+    #[cfg(not(feature = "standalone"))]
     pub(crate) fn generate_url(&self) -> String {
         let mut query = vec![format!("url={}", self.url)];
         if let Some(sel) = &self.selector {
@@ -79,14 +119,6 @@ impl CaptureAPI {
         }
         query.push(format!("wait={}", self.wait.as_millis()));
         format!("/capture?{}", query.join("&"))
-    }
-
-    /// Fetch the captured screenshot from the API
-    pub async fn fetch(&self, client: &Client) -> Result<Vec<u8>, Error> {
-        let url = format!("{}{}", client.base_url, self.generate_url());
-        let resp: Response = reqwest::get(&url).await?.error_for_status()?;
-        let bytes = resp.bytes().await?;
-        Ok(bytes.to_vec())
     }
 }
 
