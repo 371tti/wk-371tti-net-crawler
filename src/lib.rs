@@ -3,6 +3,7 @@ pub mod schema;
 use std::time::Duration;
 
 use reqwest::{Error, Response};
+use urlencoding::encode;
 
 use crate::schema::ScraperResult;
 
@@ -101,7 +102,7 @@ impl ScraperAPIBuilder {
     /// Create a new ScraperAPIBuilder with the specified URL
     pub fn new(url: &str) -> Self {
         ScraperAPIBuilder {
-            url: url.to_string(),
+            url: encode(url).to_string(),
             selectors: Vec::new(),
             text_selector: None,
             waiting_selector: None,
@@ -148,7 +149,7 @@ impl CaptureAPIBuilder {
     /// Create a new CaptureAPIBuilder with the specified URL
     pub fn new(url: &str) -> Self {
         CaptureAPIBuilder {
-            url: url.to_string(),
+            url: encode(url).to_string(),
             selector: None,
             wait: Duration::from_secs(0),
         }

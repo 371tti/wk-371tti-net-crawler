@@ -1,6 +1,7 @@
-use std::{sync::{Arc, Weak}, time::Duration};
+use std::{borrow::Cow, sync::{Arc, Weak}, time::Duration};
 
 use kurosabi::{Kurosabi, context::ContextMiddleware};
+use urlencoding::decode;
 
 use crate::{browser::Engine, schema::ScraperResult};
 
@@ -53,6 +54,7 @@ async fn main() {
             .map(std::time::Duration::from_millis)
             .unwrap_or(std::time::Duration::from_millis(0));
         if let Some(url) = url {
+            let url = decode(&url).unwrap_or_else(|_| Cow::Borrowed(url.as_str())).to_string();
             let selector = c.req.path.get_query("selector");
             if let Some(selector) = selector {
                 // attempt to upgrade Weak -> Arc
@@ -118,6 +120,7 @@ async fn main() {
         let text_selector = c.req.path.get_query("text_selector");
         let waiting_selector = c.req.path.get_query("waiting_selector");
         if let Some(url) = url {
+            let url = decode(&url).unwrap_or_else(|_| Cow::Borrowed(url.as_str())).to_string();
             if let Some(engine) = c.c.engine.upgrade() {
                 let result = engine.scraping(&url, selectors, text_selector.as_deref(), waiting_selector.as_deref()).await;
                 match result {
@@ -156,30 +159,29 @@ async fn main() {
         c
     });
 
-        kurosabi.server()
-            .host([0,0,0,0])
-            .thread(16)
-            .port(3773)
-            .nodelay(true)
-            .http_keepalive_timeout(Duration::from_secs(300))
-            .build().run_async().await;
+    // サーバをメインタスクで起動し、終了時にエンジンもshutdown
+    let server = kurosabi.server()
+        .host([0,0,0,0])
+        .thread(16)
+        .port(3773)
+        .nodelay(true)
+        .http_keepalive_timeout(Duration::from_secs(300))
+        .build();
 
+    println!("server started. Press Ctrl-C to shutdown...");
 
-
-
-
-
-
-
-    println!("server started, waiting for Ctrl-C...");
-    if let Err(e) = tokio::signal::ctrl_c().await {
-        eprintln!("failed to listen for ctrl_c: {}", e);
-    } else {
-        println!("received Ctrl-C, killing browser engine...");
-        if let Err(e) = engine_arc.shutdown().await {
-            eprintln!("engine shutdown error: {}", e);
+    tokio::select! {
+        _ = server.run_async() => {
+            println!("server stopped (run_async returned)");
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("received Ctrl-C, shutting down server and browser engine...");
         }
     }
 
-    println!("killed browser engine, please ctrl-c again to shutdown server...");
+    // サーバ停止後にエンジンもshutdown
+    if let Err(e) = engine_arc.shutdown().await {
+        eprintln!("engine shutdown error: {}", e);
+    }
+    println!("shutdown complete. Exiting.");
 }
