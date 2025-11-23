@@ -33,7 +33,7 @@ impl Engine {
                 )
                 .disable_cache()
                 // .no_sandbox() // need if running as root
-                .headless_mode(HeadlessMode::New)
+                .headless_mode(HeadlessMode::True)
                 .build()?,
         ).await?;
         let browser = Arc::new(RwLock::new(browser));
