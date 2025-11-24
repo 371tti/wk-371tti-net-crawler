@@ -40,13 +40,23 @@ impl Client {
 
     /// Capture API
     /// screen capture API request builder
-    pub async fn capture_api(&self, api: CaptureAPI) -> Result<Vec<u8>, Box<dyn Error>> {
+    pub async fn capture_api(&self, api: CaptureAPI) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
         #[cfg(not(feature = "standalone"))]
         {
             let url = format!("{}{}", self.base_url, api.generate_url());
             let resp: Response = reqwest::get(&url).await?;
-            let bytes = resp.bytes().await?;
-            Ok(bytes.to_vec())
+            let content_type = resp
+                .headers()
+                .get(reqwest::header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("");
+            if content_type.starts_with("text/") {
+                let text = resp.text().await.unwrap_or_else(|_| "<failed to read body>".to_string());
+                Err(format!("Content type is text, not an image: {}", text).into())
+            } else {
+                let bytes = resp.bytes().await?;
+                Ok(bytes.to_vec())
+            }
         }
         #[cfg(feature = "standalone")]
         {
